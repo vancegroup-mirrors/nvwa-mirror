@@ -32,7 +32,7 @@
  * Utility templates for functional programming style.  Using this file
  * requires a C++14-compliant compiler.
  *
- * @date  2014-11-18
+ * @date  2014-11-29
  */
 
 #ifndef NVWA_FUNCTIONAL_H
@@ -40,40 +40,42 @@
 
 #include <memory>               // std::allocator
 #include <type_traits>          // std::integral_constant...
+#include <utility>              // std::forward
 #include <vector>               // std::vector
 #include "_nvwa.h"              // NVWA_NAMESPACE_*
 
 NVWA_NAMESPACE_BEGIN
 
-namespace funcimpl {
+namespace detail {
 
-template <class T1, class T2>
+template <class _T1, class _T2>
 struct can_reserve
 {
     struct good { char dummy; };
     struct bad { char dummy[2]; };
-    template <class U, void   (U::*)(size_t)> struct SFINAE1 {};
-    template <class U, size_t (U::*)() const> struct SFINAE2 {};
-    template <class U> static good test_reserve(SFINAE1<U, &U::reserve>*);
-    template <class U> static bad  test_reserve(...);
-    template <class U> static good test_size(SFINAE2<U, &U::size>*);
-    template <class U> static bad  test_size(...);
-    static const bool value = (sizeof(test_reserve<T1>(0)) == sizeof(good) &&
-                               sizeof(test_size<T2>(0)) == sizeof(good));
+    template <class _Up, void   (_Up::*)(size_t)> struct _SFINAE1 {};
+    template <class _Up, size_t (_Up::*)() const> struct _SFINAE2 {};
+    template <class _Up> static good __reserve(_SFINAE1<_Up, &_Up::reserve>*);
+    template <class _Up> static bad  __reserve(...);
+    template <class _Up> static good __size(_SFINAE2<_Up, &_Up::size>*);
+    template <class _Up> static bad  __size(...);
+    static const bool value =
+        (sizeof(__reserve<_T1>(nullptr)) == sizeof(good) &&
+         sizeof(__size<_T2>(nullptr)) == sizeof(good));
 };
 
-template <class T1, class T2>
-void try_reserve(T1&, const T2&, std::false_type)
+template <class _T1, class _T2>
+void try_reserve(_T1&, const _T2&, std::false_type)
 {
 }
 
-template <class T1, class T2>
-void try_reserve(T1& dest, const T2& src, std::true_type)
+template <class _T1, class _T2>
+void try_reserve(_T1& dest, const _T2& src, std::true_type)
 {
     dest.reserve(src.size());
 }
 
-} /* namespace funcimpl */
+} /* namespace detail */
 
 /**
  * Applies the \a mapfn function to each item in the input container.
@@ -97,10 +99,10 @@ map(_Fn mapfn, const _Cont& inputs)
 {
     _OutCont<typename _Cont::value_type,
         _Alloc<typename _Cont::value_type>> result;
-    funcimpl::try_reserve(
+    detail::try_reserve(
         result, inputs,
         std::integral_constant<
-            bool, funcimpl::can_reserve<decltype(result), _Cont>::value>());
+            bool, detail::can_reserve<decltype(result), _Cont>::value>());
     for (auto& item : inputs)
         result.push_back(mapfn(item));
     return result;
@@ -135,9 +137,9 @@ reduce(_Fn reducefn, const _Cont& inputs,
  * Returns the data intact to terminate the recursion.
  */
 template <typename _Tp>
-auto apply(const _Tp& data)
+auto apply(_Tp&& data)
 {
-    return data;
+    return std::forward<_Tp>(data);
 }
 
 /**
@@ -148,48 +150,37 @@ auto apply(const _Tp& data)
  * @param args  the rest functions to apply
  */
 template <typename _Tp, typename _Fn, typename... _Fargs>
-auto apply(const _Tp& data, _Fn fn, _Fargs... args)
+auto apply(_Tp&& data, _Fn fn, _Fargs... args)
 {
-    return apply(fn(data), args...);
+    return apply(fn(std::forward<_Tp>(data)), args...);
 }
 
 /**
- * Function object to pipeline the application of function objects.
+ * Constructs a function (object) that composes the passed functions.
  *
- * @param _Funcs  functions to apply
+ * @return      the identity function
  */
-template <typename... _Funcs>
-struct func_pipeline;
+template <typename _Tp>
+auto compose()
+{
+    return apply<_Tp>;
+}
 
 /**
- * Function object to pipeline the application of function objects.
- * This is the no-operation specialization to terminate recursion.
+ * Constructs a function (object) that composes the passed functions.
+ *
+ * @param fn    the first function to compose (which is applied last)
+ * @param args  the rest functions to compose
+ * @return      the function object that composes the passed functions
  */
-template <>
-struct func_pipeline<>
+template <typename _Tp, typename _Fn, typename... _Fargs>
+auto compose(_Fn fn, _Fargs... args)
 {
-    template <typename _Tp>
-    auto operator()(const _Tp& input)
+    return [=](_Tp&& x)
     {
-        return input;
-    }
-};
-
-/**
- * Function object to pipeline the application of function objects.
- * This is the general recursive specialization to apply the first
- * function object and then call itself with the rest function objects.
- */
-template <typename _First, typename... _Rest>
-struct func_pipeline<_First, _Rest...>
-{
-    template <typename _Tp>
-    auto operator()(const _Tp& input)
-    {
-        _First fn;
-        return func_pipeline<_Rest...>()(fn(input));
-    }
-};
+        return fn(compose<_Tp>(args...)(std::forward<_Tp>(x)));
+    };
+}
 
 NVWA_NAMESPACE_END
 
